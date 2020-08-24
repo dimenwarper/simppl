@@ -1,11 +1,9 @@
 import numpy as np
 from typing import List, Union, Optional
-from .registry import REGISTRY
+from .computation_registry import  Variable
 
-class Distribution:
-    def __new__(cls, name, *args, register=True, **kwargs):
-        return REGISTRY.call_variable(name, cls, register, *args, **kwargs)
 
+class Distribution(Variable):
     def __init__(self, register=False, observed=None):
         self.observed = observed
         self.support = None
@@ -28,6 +26,10 @@ class Distribution:
         else:
             return self.support
 
+
+############
+# Custom distributions
+############
 
 class Flip(Distribution):
     def __init__(self, name, p=0.5, **kwargs):
