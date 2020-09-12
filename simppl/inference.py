@@ -1,19 +1,107 @@
-from types import SimpleNamespace
+from typing import Dict, Any, Optional
 
 import numpy as np
+import pandas as pd
 from itertools import product
 from scipy.special import logsumexp
 from .computation_registry import COMPUTATION_REGISTRY
+from .distributions import Distribution
 
-class RandCompEnv:
-    def __init__(self, model_locals, return_value, normalization_constant=None):
+
+class Model:
+    def __init__(self, distributions: Dict[str, Distribution]):
+        self.distributions = distributions
+        self.model_tree = self.__build_model_tree(self.distributions)
+
+    def _is_in_model_tree(self, d: Distribution, model_tree: Dict[str, Dict[str, Any]]) -> bool:
+        if len([dd for dd in model_tree.values() if dd['distribution'].name == d.name]) == 0:
+            for node in model_tree.values():
+                if self._is_in_model_tree(d, node['children']):
+                    return True
+            return False
+        else:
+            return True
+
+    def __build_model_tree(self, distributions: Dict[str, Distribution]) -> Dict[str, Dict[str, Any]]:
+        if len(distributions) == 0:
+            return {}
+
+        model_tree = {}
+        remaining = []
+        for name, d in distributions.items():
+            dist_children = {k: v for k, v in d.__dict__.items() if isinstance(v, Distribution)}
+            if len(dist_children) > 0:
+                model_tree[name] = {
+                    'distribution': d,
+                    'children': self.__build_model_tree(dist_children)
+                }
+            else:
+                remaining.append((name, d))
+
+        for name, d in remaining:
+            if not self._is_in_model_tree(d, model_tree):
+                model_tree[name] = {
+                    'distribution': d,
+                    'children' : {}
+                }
+
+        return model_tree
+
+    def __render_model_tree(self, model_tree: Dict[str, Dict[str, Any]], level: Optional[int] = 0, prefix: Optional[str] = '   '):
+        html = ''
+        N = len(model_tree)
+        for i, (name, node) in enumerate(model_tree.items()):
+            if i == 0 and level == 0 and i != N - 1:
+                gylph = '┌'
+            elif i == N - 1:
+                gylph = '└'
+            else:
+                gylph = '├'
+            next_prefix = '  '
+            if i < N - 1:
+                next_prefix = '│  '
+            if len(node['children']) == 0:
+                html += prefix + f'{gylph}──⮀ {name} = {node["distribution"].__repr__()}\n'
+            else:
+                html += prefix + f'{gylph}──⮀ {node["distribution"].__class__.__name__} name={node["distribution"].name}\n'
+                html += f'{self.__render_model_tree(node["children"], level + 1, prefix + next_prefix)}'
+
+        return html
+
+    def __render_distributions(self, model_tree: Dict[str, Dict[str, Any]], html: Optional[str] = ''):
+        for name, node in model_tree.items():
+            if len(node['children']) == 0:
+                html += f'<span>{node["distribution"]._repr_html_()}</span>'
+            else:
+                html += self.__render_distributions(node['children'])
+        return html
+
+    def _repr_html_(self):
+        html = '<div>'
+        html += '<h4>Model Tree</h4>'
+        html += f'<div><pre>{self.__render_model_tree(self.model_tree, 0)}</pre></div>'
+        html += '<h4>Priors</h4>'
+        html += f'<div>{self.__render_distributions(self.model_tree)}</div>'
+        html += '</div>'
+        return html
+
+
+class RandomComputationEnv:
+    def __init__(self, model, model_locals, return_values, normalization_constant):
+        self.model = model
         self.__model_locals = model_locals
-        if normalization_constant is not None:
-            for vals in self.__model_locals.values():
-                for v in vals:
-                    v[-1] = np.exp(v[-1]) - normalization_constant
-        self.locals = SimpleNamespace(**self.__model_locals)
-        self.return_value = return_value
+        self.__model_locals['_probability_'] = [
+            np.exp(logsumexp(v) - normalization_constant) if len(v) > 0 else 0
+            for v in self.__model_locals['_scores_']
+        ]
+        self.executions = self.__build_executions_df(self.__model_locals)
+        self.return_values = return_values
+
+    def __build_executions_df(self, locals: Dict[Any, Any]) -> pd.DataFrame:
+        if len(locals) == 0:
+            return pd.DataFrame()
+        return pd.DataFrame.from_dict(locals).drop('_scores_', axis=1)
+
 
 def Enumerate(fun, **fun_kwargs):
     COMPUTATION_REGISTRY.reset(fun, **fun_kwargs)
@@ -23,14 +111,37 @@ def Enumerate(fun, **fun_kwargs):
     all_results = {}
     Z = []
     for name, var in variables.items():
-        all_supports.append([(name, supp) for supp in var.support_or_obs()])
+        all_supports.append([(name, supp) for supp in var.support])
+
     for defs in product(*all_supports):
-        res, score = COMPUTATION_REGISTRY.call_with_definitions(fun, dict(defs))
-        all_results.setdefault(res, []).append(score)
-        Z.append(score)
+        defs = dict(defs)
+        res, realized_variables = COMPUTATION_REGISTRY.call_with_definitions(fun, defs)
+
+        scores = []
+        for name, v in realized_variables.items():
+            if isinstance(v, Distribution):
+                if not v.is_observed():
+                    scores += [v.loglike(defs[name])]
+
+        for name, v in realized_variables.items():
+            if isinstance(v, Distribution):
+                if v.is_observed():
+                    scores += [v.loglike(obs) for obs in v.observed]
+
+        COMPUTATION_REGISTRY.add_to_model_locals(**{'_return_value_': res, '_scores_': scores})
+
+        all_results.setdefault(res, []).extend(scores)
+        Z.append(logsumexp(scores))
+
     Z = logsumexp(Z)
-    return RandCompEnv(
-        return_value=dict([(res, np.exp(logsumexp(scores) - Z)) for res, scores in all_results.items()]),
+    return RandomComputationEnv(
+        model=Model(variables),
+        return_values=dict(
+            [
+                (res, np.exp(logsumexp(scores) - Z) if len(scores) > 0 else 0)
+                for res, scores in all_results.items() if len(scores) > 0
+            ]
+        ),
         model_locals=COMPUTATION_REGISTRY.model_locals,
         normalization_constant=Z
     )

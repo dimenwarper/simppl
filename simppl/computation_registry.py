@@ -1,12 +1,12 @@
-from copy import deepcopy
-from typing import Union, Callable, Dict, Any, List
+import inspect
+from typing import Callable, Dict, Any, List
 import numpy as np
-
 
 class ComputationRegistry:
     def __init__(self):
         self.current_definitions = {}
         self.current_variables = {}
+        self.variable_inits = {}
 
         self.model_locals = {}
 
@@ -15,14 +15,16 @@ class ComputationRegistry:
     def add_to_model_locals(self, **kwargs):
         if not self.resetting:
             for k, v in kwargs.items():
-                if k not in self.model_locals:
-                    self.model_locals[k] = []
-                self.model_locals[k].append([v])
+                if k not in self.fun_signature.parameters:
+                    if k not in self.model_locals:
+                        self.model_locals[k] = []
+                    self.model_locals[k].append(v)
 
     def reset(self, fun, **fun_kwargs):
         self.current_definitions = {}
         self.current_variables = {}
         self.model_locals = {}
+        self.fun_signature = inspect.signature(fun)
         self.resetting = True
         fun(**fun_kwargs)
         self.resetting = False
@@ -31,9 +33,10 @@ class ComputationRegistry:
         if name not in self.current_variables or not register:
             instance = super(Variable, cls).__new__(cls)
             instance.name = name
-            instance.__init__(name, *args, **kwargs)
+            instance.__init__(name=name, *args, **kwargs)
 
             if register:
+                self.variable_inits[name] = [args, kwargs]
                 self.current_variables[name] = instance
             return instance
 
@@ -42,22 +45,14 @@ class ComputationRegistry:
 
     def call_with_definitions(self, fun: Callable, definitions: Dict[str, Any]):
         self.current_definitions = definitions
-        variable_clones = {}
+        realized_variables = {}
         for name, var in self.current_variables.items():
-            clone = type(var)(name, register=False)
-            for att, val in var.__dict__.items():
-                if isinstance(val, CNode):
-                    setattr(clone, att, val.call(definitions))
-                else:
-                    setattr(clone, att, val)
-            variable_clones[name] = clone
-
-        score = sum([variable_clones[name].score(val) for name, val in definitions.items()])
-        res = fun()
-        if len(self.model_locals) > 0:
-            for k, vals in self.model_locals.items():
-                vals[-1].append(score)
-        return res, score
+            args, kwargs = self.variable_inits[name]
+            args = [a.call(definitions) if isinstance(a, CNode) else a for a in args]
+            kwargs = {k: v.call(definitions) if isinstance(v, CNode) else v for k, v in kwargs.items()}
+            clone = type(var)(name, *args, **kwargs, register=False)
+            realized_variables[name] = clone
+        return fun(), realized_variables
 
 
 COMPUTATION_REGISTRY = ComputationRegistry()
