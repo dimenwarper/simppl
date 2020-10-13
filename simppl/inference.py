@@ -1,17 +1,18 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import numpy as np
 import pandas as pd
 from itertools import product
 from scipy.special import logsumexp
-from .computation_registry import COMPUTATION_REGISTRY
+from tqdm.auto import tqdm
+
+from .computation_registry import COMPUTATION_REGISTRY, CNode, Op
 from .distributions import Distribution
 
 
 class Model:
     def __init__(self, distributions: Dict[str, Distribution]):
         self.distributions = distributions
-        self.model_tree = self.__build_model_tree(self.distributions)
 
     def _is_in_model_tree(self, d: Distribution, model_tree: Dict[str, Dict[str, Any]]) -> bool:
         if len([dd for dd in model_tree.values() if dd['distribution'].name == d.name]) == 0:
@@ -22,6 +23,20 @@ class Model:
         else:
             return True
 
+    # TODO: this should really be in computation_registry
+    def __extract_distributions(self, val, carried=[]):
+        if isinstance(val, CNode):
+            if isinstance(val, Distribution):
+                return [val]
+            elif isinstance(val, Op):
+                for arg in val.args:
+                    carried += self.__extract_distributions(arg, carried)
+                return carried
+            else:
+                return []
+        else:
+            return []
+
     def __build_model_tree(self, distributions: Dict[str, Distribution]) -> Dict[str, Dict[str, Any]]:
         if len(distributions) == 0:
             return {}
@@ -29,7 +44,7 @@ class Model:
         model_tree = {}
         remaining = []
         for name, d in distributions.items():
-            dist_children = {k: v for k, v in d.__dict__.items() if isinstance(v, Distribution)}
+            dist_children = {k: child_dist for k, v in d.__dict__.items() for child_dist in self.__extract_distributions(v)}
             if len(dist_children) > 0:
                 model_tree[name] = {
                     'distribution': d,
@@ -46,6 +61,10 @@ class Model:
                 }
 
         return model_tree
+
+    @property
+    def model_tree(self):
+        return self.__build_model_tree(self.distributions)
 
     def __render_model_tree(self, model_tree: Dict[str, Dict[str, Any]], level: Optional[int] = 0, prefix: Optional[str] = '   '):
         html = ''
@@ -68,12 +87,14 @@ class Model:
 
         return html
 
-    def __render_distributions(self, model_tree: Dict[str, Dict[str, Any]], html: Optional[str] = ''):
+    def __render_distributions(self, model_tree: Dict[str, Dict[str, Any]], html: Optional[str] = '', already_rendered: Optional[List[str]] = None):
+        _already_rendered = already_rendered if already_rendered is not None else []
         for name, node in model_tree.items():
-            if len(node['children']) == 0:
+            if len(node['children']) == 0 and node['distribution'] not in _already_rendered:
+                _already_rendered.append(node['distribution'].name)
                 html += f'<span>{node["distribution"]._repr_html_()}</span>'
             else:
-                html += self.__render_distributions(node['children'])
+                html += self.__render_distributions(node['children'], already_rendered=_already_rendered)
         return html
 
     def _repr_html_(self):
@@ -102,8 +123,16 @@ class RandomComputationEnv:
             return pd.DataFrame()
         return pd.DataFrame.from_dict(locals).drop('_scores_', axis=1)
 
+    def _repr_html_(self):
+        r = '👋 You are looking at a <i>Random Computation Environment</i>, the <b>executions</b> property has a dataframe' \
+            ' with all of the executions visited during inference, while the <b>model</b> property has a structured' \
+            ' version of the model used.'
+        return r
 
-def Enumerate(fun, **fun_kwargs):
+
+
+
+def Exhaustive(fun, **fun_kwargs):
     COMPUTATION_REGISTRY.reset(fun, **fun_kwargs)
     variables = COMPUTATION_REGISTRY.current_variables
 
@@ -113,7 +142,7 @@ def Enumerate(fun, **fun_kwargs):
     for name, var in variables.items():
         all_supports.append([(name, supp) for supp in var.support])
 
-    for defs in product(*all_supports):
+    for defs in tqdm(list(product(*all_supports))):
         defs = dict(defs)
         res, realized_variables = COMPUTATION_REGISTRY.call_with_definitions(fun, defs)
 
@@ -126,7 +155,7 @@ def Enumerate(fun, **fun_kwargs):
         for name, v in realized_variables.items():
             if isinstance(v, Distribution):
                 if v.is_observed():
-                    scores += [v.loglike(obs) for obs in v.observed]
+                    scores += [v.loglike(v.observations[i, :]) for i in range(len(v.observations))]
 
         COMPUTATION_REGISTRY.add_to_model_locals(**{'_return_value_': res, '_scores_': scores})
 

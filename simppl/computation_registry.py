@@ -50,7 +50,10 @@ class ComputationRegistry:
             args, kwargs = self.variable_inits[name]
             args = [a.call(definitions) if isinstance(a, CNode) else a for a in args]
             kwargs = {k: v.call(definitions) if isinstance(v, CNode) else v for k, v in kwargs.items()}
-            clone = type(var)(name, *args, **kwargs, register=False)
+            if hasattr(var, 'clone'):
+                clone = var.clone(name, *args, **kwargs, register=False)
+            else:
+                clone = type(var)(name, *args, **kwargs, register=False)
             realized_variables[name] = clone
         return fun(), realized_variables
 
@@ -91,10 +94,13 @@ class Op(CNode):
 
     def call(self, definitions: Dict[str, Any]):
         call_args = [arg.call(definitions) for arg in self.args]
-        return self.fun(*call_args, self.fun_name)
+        res = self.fun(*call_args, self.fun_name)
+        if res is NotImplemented and self.fun_name.startswith('__'):
+            res = getattr(call_args[-1], '__r' + self.fun_name[2:])(call_args[0])
+        return res
 
     def __repr__(self):
-        return f'Op(name={self.name}, fun={self.fun}, args={self.args})'
+        return f'Op({self.name})'
 
 
 __OPS_TO_ADD = [
@@ -121,17 +127,29 @@ __OPS_TO_ADD = [
     '__rge__',
     '__rlt__',
     '__rgt__',
+    '__neg__',
+    '__pos__',
+    '__abs__',
+    '__getitem__',
     'dot',
     'matmul',
     'log',
     'exp',
+    'sqrt',
+]
+
+__UNARY_OPS = [
+    '__neg__',
+    '__pos__',
+    '__abs__',
 ]
 
 __SPECIAL_OPS = {
     'dot': lambda x, y, fun_name: np.dot(x, y),
     'matmul': lambda x, y, fun_name: np.matmul(x, y),
-    'log': lambda x, y, fun_name: np.log(y),
-    'exp': lambda x, y, fun_name: np.exp(y),
+    'log': lambda y, fun_name: np.log(y),
+    'exp': lambda y, fun_name: np.exp(y),
+    'sqrt': lambda y, fun_name: np.sqrt(y),
 }
 
 
@@ -147,6 +165,10 @@ def wrap_op(fun_name: str, fun: Callable) -> Callable:
 for att_name in __OPS_TO_ADD:
     if att_name in __SPECIAL_OPS:
         fun = __SPECIAL_OPS[att_name]
+    elif att_name in __UNARY_OPS:
+        fun = lambda x, fun_name: getattr(x, fun_name)()
     else:
         fun = lambda x, y, fun_name: getattr(x, fun_name)(y)
     setattr(CNode, att_name, wrap_op(att_name, fun))
+
+

@@ -1,4 +1,4 @@
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Dict, Any, Callable
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -9,13 +9,13 @@ from sklearn.metrics.pairwise import pairwise_kernels
 from sklearn.svm import OneClassSVM
 
 from . import viz
-from .computation_registry import Variable
+from .computation_registry import Variable, CNode
 
 
 class Distribution(Variable):
-    def __init__(self, name, observed=None, **kwargs):
+    def __init__(self, name, observations=None, **kwargs):
         self.name = name
-        self.observed = observed
+        self.observations = observations
         self.support = None
         self.log_probas = None
 
@@ -23,11 +23,11 @@ class Distribution(Variable):
         raise NotImplemented('Loglike method has to be implemented for random variables')
 
     def is_observed(self):
-        return self.observed is not None
+        return self.observations is not None
 
     def support_or_obs(self):
         if self.is_observed():
-            return self.observed
+            return self.observations
         else:
             return self.support
 
@@ -35,6 +35,11 @@ class Distribution(Variable):
 ############
 # Custom distributions
 ############
+
+def _asscalar(x: Union[float, np.array]) -> bool:
+    if isinstance(x, np.ndarray):
+        return np.asscalar(x)
+    return x
 
 class Flip(Distribution):
     def __init__(self, name, p=0.5, **kwargs):
@@ -44,7 +49,7 @@ class Flip(Distribution):
         self.log_probas = {0: np.log(1 - p), 1: np.log(p)}
 
     def loglike(self, choice):
-        return self.log_probas[choice]
+        return self.log_probas[_asscalar(choice)]
 
     def __repr__(self):
         return f'Flip(name={self.name} p={self.p})'
@@ -70,7 +75,7 @@ class Pick(Distribution):
             self.log_probas = {s: np.log(p) for s, p in probas.items()}
 
     def loglike(self, choice):
-        return self.log_probas[choice]
+        return self.log_probas[_asscalar(choice)]
 
     def __repr__(self):
         return f'Pick(name={self.name} items={self.items})'
@@ -106,6 +111,7 @@ class SomeValue(Distribution):
         self.log_probas = self.__generate_probas(self.support, self.around, self.mostly)
 
     def __get_best_supp_idx(self, x):
+        assert np.isscalar(x) or isinstance(x, CNode), 'SomeValue accepts only scalars'
         return np.argmin([np.linalg.norm(s - x) for s in self.support])
 
     def __add_factor(self, support, probas, pivot, factor, decay):
@@ -131,8 +137,8 @@ class SomeValue(Distribution):
         return {k: np.log(p / Z) for k, p in probas.items()}
 
     def loglike(self, value):
-        # noinspection PyTypeChecker
-        best_supp = self.support[self.__get_best_supp_idx(value)]
+        val = np.asscalar(value) if isinstance(value, np.array([]).__class__) else value
+        best_supp = self.support[self.__get_best_supp_idx(val)]
         return self.log_probas[best_supp]
 
     def __repr__(self):
@@ -146,7 +152,7 @@ class SomeValue(Distribution):
     def _repr_html_(self):
         return viz.sparkbars(
             self.support,
-            [self.log_probas[s] for s in self.support],
+            [np.exp(self.log_probas[s]) for s in self.support],
             title=f'SomeValue {self.name}',
             width=(self.between[1] - self.between[0]) / len(self.support)
         )
@@ -166,24 +172,23 @@ class KernelDiscretizedMethod:
 
     @staticmethod
     def get_affinity_matrix(samples, affinity_fun):
-        if 'float' in str(samples.dtype) or 'int' in str(samples.dtype):
-            return pairwise_kernels(samples, metric=affinity_fun)
-        else:
-            N = len(samples)
-            M = np.zeros([N, N])
-            for i, x in enumerate(samples):
-                for j in range(i, N):
-                    y = samples[j]
-                    M[i, j] = affinity_fun(x, y)
-                    M[j, i] = M[i, j]
-            return M
+        N = len(samples)
+        M = np.zeros([N, N])
+        for i in range(N):
+            x = samples[i, :]
+            for j in range(i, N):
+                y = samples[j, :]
+                M[i, j] = affinity_fun(x, y)
+                M[j, i] = M[i, j]
+        return M
 
     @staticmethod
     def discretized_scores(resolution, samples, affinity_matrix, score_fun):
         clusterer = SpectralClustering(
             n_clusters=resolution,
             affinity='precomputed',
-            assign_labels="discretize"
+            assign_labels='discretize',
+            random_state=1234
         )
 
         labels = clusterer.fit_predict(affinity_matrix)
@@ -197,12 +202,14 @@ class KernelDiscretizedMethod:
         return scores
 
     @staticmethod
+    def get_best_affinity_idx_for_sample(affinity_fun, log_probas, sample, samples):
+        centroid_indices = list(log_probas.keys())
+        affs = affinity_fun(sample, samples[centroid_indices])
+        return centroid_indices[np.argmin(affs)]
+
+    @staticmethod
     def loglike(affinity_fun, log_probas, samples, sample):
-        return log_probas[
-            sorted([(idx, affinity_fun(sample, samples[idx])) for idx in log_probas],
-                   key=lambda x: x[1]
-                   )[-1][0]
-        ]
+        return log_probas[KernelDiscretizedMethod.get_best_affinity_idx_for_sample(affinity_fun, log_probas, sample, samples)]
 
     @staticmethod
     def render(affinity_matrix, log_fun, samples, title):
@@ -226,13 +233,16 @@ class KernelDiscretizedMethod:
         return viz.fig2html(fig)
 
 
-class SomeSpace(Distribution):
+class SomeThing(Distribution):
     def __init__(
             self,
             name,
             samples: np.array,
+            mostly: Optional[np.array] = None,
             resolution: int = 10,
             affinity: str = 'rbf',
+            affinity_matrix: Optional[np.array] = None,
+            log_probas: Optional[Dict[Any, float]] = None,
             **kwargs
     ):
         Distribution.__init__(self, name, **kwargs)
@@ -241,50 +251,87 @@ class SomeSpace(Distribution):
         self.affinity = affinity
         self.resolution = min(resolution, len(samples) // 2)
         self.__affinity_fun = KernelDiscretizedMethod.get_affinity_function(self.affinity)
-        self.__affinity_matrix = KernelDiscretizedMethod.get_affinity_matrix(self.samples, self.__affinity_fun)
+        self.__affinity_matrix = affinity_matrix if affinity_matrix is not None else KernelDiscretizedMethod.get_affinity_matrix(self.samples, self.__affinity_fun)
 
-        self.log_probas = KernelDiscretizedMethod.discretized_scores(
-            self.resolution,
-            self.samples,
-            self.__affinity_matrix,
-            lambda mask, idx: mask.mean()
-        )
+        if log_probas is None:
+            self.log_probas = KernelDiscretizedMethod.discretized_scores(
+                self.resolution,
+                self.samples,
+                self.__affinity_matrix,
+                lambda mask, idx: mask.mean()
+            )
+        else:
+            self.log_probas = log_probas
 
-        self.support = [self.samples[idx] for idx in self.log_probas]
+        self.mostly = mostly
+        if self.mostly is not None and not isinstance(self.mostly, CNode):
+            self.log_probas = self.__add_factor(
+                lambda d: 10000 * d,
+                self.__affinity_fun,
+                self.log_probas,
+                self.mostly,
+                self.samples
+            )
+
+        self.support = [self.samples[idx, :] for idx in self.log_probas]
+
+    def clone(self, *args, **kwargs):
+        kwargs.update({'log_probas': self.log_probas, 'affinity_matrix': self.__affinity_matrix})
+        return SomeThing(*args, **kwargs)
 
     def loglike(self, sample):
         return KernelDiscretizedMethod.loglike(self.__affinity_fun, self.log_probas, self.samples, sample)
 
+    def __add_factor(self, factor_fun: Callable, affinity_fun, log_probas: Dict[Any, float], pivot: np.array, samples: np.array) -> Dict[Any, float]:
+        pivot_idx = KernelDiscretizedMethod.get_best_affinity_idx_for_sample(affinity_fun, log_probas, pivot, samples)
+        factored = {}
+        aff_to_pivot = affinity_fun(samples[list(log_probas.keys()), :], samples[pivot_idx, :])
+        factors = factor_fun(aff_to_pivot)
+        for i, (idx, lp) in enumerate(log_probas.items()):
+            factored[idx] = lp + np.asscalar(factors[i])
+        Z = logsumexp(list(factored.values()))
+        return {k: v - Z for k, v in factored.items()}
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}(resolution={self.resolution}, samples=[{"X".join([str(x) for x in self.samples.shape])}], affinity={self.__affinity_fun})'
+
     def _repr_html_(self):
         return KernelDiscretizedMethod.render(self.__affinity_matrix, self.loglike, self.samples,
-                                              f'SomeSpace {self.name}')
+                                              f'{self.__class__.__name__}{self.name}')
 
 
-class AskTheExpert(Distribution):
+class AskTheExpert(SomeThing):
     def __init__(
             self,
             name,
             samples,
+            mostly: Optional[np.array]=None,
             number_of_questions=10,
             affinity='rbf',
             resolution=100,
             **kwargs
     ):
-        Distribution.__init__(name, **kwargs)
-        self.samples = samples
-        self.affinity = affinity
-        self.resolution = min(resolution, len(samples) // 2)
-        self.__affinity_fun = KernelDiscretizedMethod.get_affinity_function(self.affinity)
-        self.__affinity_matrix = KernelDiscretizedMethod.get_affinity_matrix(self.samples, self.__affinity_fun)
+        __affinity_fun = KernelDiscretizedMethod.get_affinity_function(affinity)
+        __affinity_matrix = KernelDiscretizedMethod.get_affinity_matrix(samples, __affinity_fun)
 
-        self.log_probas = self.__generate_probas(
-            self.samples,
-            self.resolution,
-            self.__affinity_matrix,
+        log_probas = self.__generate_probas(
+            samples,
+            resolution,
+
             number_of_questions
         )
 
-        self.support = [self.samples[idx] for idx in self.log_probas]
+        SomeThing.__init__(
+                self,
+                name=name,
+                samples=samples,
+                mostly=mostly,
+                resolution=resolution,
+                affinity=affinity,
+                affinity_matrix=__affinity_matrix,
+                log_probas=log_probas,
+                **kwargs
+        )
 
     def __generate_probas(self, samples, resolution, affinity_matrix, number_of_questions):
         print(
@@ -330,9 +377,3 @@ class AskTheExpert(Distribution):
 
         return {idx: s - Z for idx, s in scores.items()}
 
-    def loglike(self, sample):
-        return KernelDiscretizedMethod.loglike(self.__affinity_fun, self.log_probas, self.samples, sample)
-
-    def _repr_html_(self):
-        return KernelDiscretizedMethod.render(self.__affinity_matrix, self.loglike, self.samples,
-                                              f'AskTheExpert {self.name}')
