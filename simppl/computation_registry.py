@@ -1,5 +1,6 @@
 import inspect
-from typing import Callable, Dict, Any, List
+from abc import ABC, abstractmethod
+from typing import Callable, Dict, Any, List, Type
 import numpy as np
 
 class ComputationRegistry:
@@ -29,7 +30,7 @@ class ComputationRegistry:
         fun(**fun_kwargs)
         self.resetting = False
 
-    def call_or_create_variable(self, name, cls, register, *args, **kwargs):
+    def call_or_create_variable(self, name: str, cls: Type['Variable'], register: bool, *args, **kwargs) -> Any:
         if name not in self.current_variables or not register:
             instance = super(Variable, cls).__new__(cls)
             instance.name = name
@@ -61,7 +62,8 @@ class ComputationRegistry:
 COMPUTATION_REGISTRY = ComputationRegistry()
 
 
-class CNode:
+class CNode(ABC):
+    @abstractmethod
     def call(self, definitions: Dict[str, Any]):
         raise NotImplementedError('CNode.call should be implemented')
 
@@ -78,7 +80,7 @@ class Constant(CNode):
 
 
 class Variable(CNode):
-    def __new__(cls, name: str, *args, register: bool = True, **kwargs):
+    def __new__(cls, name: str, *args, register: bool = True, **kwargs) -> Any:
         return COMPUTATION_REGISTRY.call_or_create_variable(name, cls, register, *args, **kwargs)
 
     def call(self, definitions: Dict[str, Any]):
