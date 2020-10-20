@@ -8,7 +8,7 @@ It does not have your favorite distribution; it only includes a couple of very s
 It doesn't use that new awesome computational graph/deep learning framework, it has minimal dependencies beyond the python data stack.
 Because of this, models will be dead simple and inference should hopefully be fast and straightforward. 
 Rather than a library you should use for production, it is a sandbox for quirky Bayesian inference ideas and for starting conversations around the theme of "Bayesian inference for users with deadlines" (with apologies to Django).
-Read the blogpost [here](http://hyperparameter.com/).
+Read the blogpost [here](http://hyperparameter.space/blog/an-unorthodox-path-for-implementing-a-probabilistic-programming-language/).
 
 ## Install
 
