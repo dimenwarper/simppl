@@ -15,7 +15,7 @@ Read the blogpost [here](http://hyperparameter.com/).
 With pip:
 
 ```
-pip install git+git://github.com/dimenwarper/simppl/simppl.git@7da8cb594efeeec7692eb927cc7ac141f03d54ab
+pip install git+git://github.com/dimenwarper/simppl.git@7da8cb594efeeec7692eb927cc7ac141f03d54ab
 ```
 
 ## A simppl model
@@ -58,7 +58,7 @@ env = Exhaustive(cytotoxicity_model)
 );
 ```
 
-This and other examples are in the showcase.ipynb.
+This and other examples are in the [showcase.ipynb](https://github.com/dimenwarper/simppl/blob/master/showcase.ipynb).
 
   
 ️
