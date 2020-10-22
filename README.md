@@ -1,4 +1,5 @@
 # simppl
+![GitHub Workflow Status](https://img.shields.io/github/workflow/status/dimenwarper/simppl/CI)
 #### The simple (?) probabilistic programming language™
 
 `simppl` is not your typical probabilistic programming language. 
