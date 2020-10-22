@@ -16,7 +16,7 @@ Read the blogpost [here](http://hyperparameter.space/blog/an-unorthodox-path-for
 With pip:
 
 ```
-pip install git+git://github.com/dimenwarper/simppl.git@7da8cb594efeeec7692eb927cc7ac141f03d54ab
+pip install git+git://github.com/dimenwarper/simppl.git@master
 ```
 
 ## A simppl model
