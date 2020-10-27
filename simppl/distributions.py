@@ -9,7 +9,7 @@ from sklearn.metrics.pairwise import pairwise_kernels
 from sklearn.svm import OneClassSVM
 
 from . import viz
-from .computation_registry import Variable, CNode
+from .computation_registry import Variable, CNode, COMPUTATION_REGISTRY
 
 
 class Distribution(Variable):
@@ -97,10 +97,14 @@ class SomeValue(Distribution):
             between,
             around: Optional[List[Union[float, np.array]]] = None,
             mostly: Optional[Union[float, np.array]] = None,
+            resolution: Optional[int] = None,
             **kwargs
     ):
         Distribution.__init__(self, name, **kwargs)
-        self.N = 10
+        if COMPUTATION_REGISTRY.resolution is not None and resolution is None:
+            self.N = COMPUTATION_REGISTRY.resolution
+        else:
+            self.N = resolution if resolution is not None else 10
         self.between = between
         delta = (self.between[1] - self.between[0]) / self.N
         self.support = [between[0] + i * delta for i in range(self.N)]

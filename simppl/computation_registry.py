@@ -1,6 +1,6 @@
 import inspect
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Any, List, Type
+from typing import Callable, Dict, Any, List, Type, Optional
 import numpy as np
 
 class ComputationRegistry:
@@ -21,10 +21,11 @@ class ComputationRegistry:
                         self.model_locals[k] = []
                     self.model_locals[k].append(v)
 
-    def reset(self, fun, **fun_kwargs):
+    def reset(self, fun, resolution: Optional[int] = None, **fun_kwargs):
         self.current_definitions = {}
         self.current_variables = {}
         self.model_locals = {}
+        self.resolution = resolution
         self.fun_signature = inspect.signature(fun)
         self.resetting = True
         fun(**fun_kwargs)
@@ -41,7 +42,7 @@ class ComputationRegistry:
                 self.current_variables[name] = instance
             return instance
 
-        if len(self.current_definitions) > 0:
+        if name in self.current_definitions:
             return self.current_variables[name].call(self.current_definitions)
 
     def call_with_definitions(self, fun: Callable, definitions: Dict[str, Any]):

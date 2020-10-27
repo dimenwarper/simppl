@@ -6,6 +6,8 @@ from itertools import product
 from scipy.special import logsumexp
 from tqdm.auto import tqdm
 
+from matplotlib import pyplot as plt
+
 from .computation_registry import COMPUTATION_REGISTRY, CNode, Op
 from .distributions import Distribution
 
@@ -13,6 +15,7 @@ from .distributions import Distribution
 class Model:
     def __init__(self, distributions: Dict[str, Distribution]):
         self.distributions = distributions
+
 
     def _is_in_model_tree(self, d: Distribution, model_tree: Dict[str, Dict[str, Any]]) -> bool:
         if len([dd for dd in model_tree.values() if dd['distribution'].name == d.name]) == 0:
@@ -118,6 +121,16 @@ class RandomComputationEnv:
         self.executions = self.__build_executions_df(self.__model_locals)
         self.return_values = return_values
 
+    def marginal(self, variable: str = '_return_value_', plot: bool = False):
+        res = (self.executions
+               .groupby(variable)['_probability_']
+               .sum()
+        )
+
+        if plot:
+            plt.hist(res.index.values, 20, weights=res.values);
+        return res
+
     def __build_executions_df(self, locals: Dict[Any, Any]) -> pd.DataFrame:
         if len(locals) == 0:
             return pd.DataFrame()
@@ -132,8 +145,8 @@ class RandomComputationEnv:
 
 
 
-def Exhaustive(fun, **fun_kwargs):
-    COMPUTATION_REGISTRY.reset(fun, **fun_kwargs)
+def Exhaustive(fun, resolution=None, **fun_kwargs):
+    COMPUTATION_REGISTRY.reset(fun, resolution=resolution, **fun_kwargs)
     variables = COMPUTATION_REGISTRY.current_variables
 
     all_supports = []
